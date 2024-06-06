@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 import mysql.connector
 import bcrypt
+import re
 
 
 load_dotenv()
@@ -22,57 +23,93 @@ api_key = "48bd621474806f24e7e0c13f309993f3"
 
 app = Flask(__name__)
 
-def get_db_connection(): 
-    conn = mysql.connector.connect( 
+mysql_config = {
     'host': 'localhost',
     'user': 'root',
     'password': 'Gae@2.0',
     'database': 'weather'
-)
-   
+}
 
-    return conn
+# Function to connect to the MySQL database
+def get_db_connection():
+    return mysql.connector.connect(**mysql_config)
+
+
 
 app.secret_key = os.urandom(24)
 
 
 @app.route("/", methods=["GET", "POST"])
+
 def register():
     if request.method == "POST":
-        data = request.get_json()  # Get the JSON data from the request
+        email = request.form["email"]
+        password = request.form["password"].encode('utf-8')
 
-        email = data.get('email')
-        password = data.get('password').encode('utf-8')
+        # Validate email format
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+            return render_template("register.html", error="Invalid email format")
+
+        # Validate password length
+        if len(password) < 8:
+            return render_template("register.html", error="Password should be at least 8 characters long")
 
         # Hash the password using bcrypt
         hashed_password = bcrypt.hashpw(password, bcrypt.gensalt())
+
+        # Connect to the MySQL database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Check if the user already exists
+        cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
+        if user:
+            # Handle error, e.g., display a message on the registration page
+            return render_template("register.html", error="User already exists")
+
+        # Insert the new user into the database
+        cursor.execute("INSERT INTO users (email, password) VALUES (%s, %s)", (email, hashed_password))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        print("User successfully registered:", email)  # Check if user is registered
+
+        return redirect(url_for("home"))
+    return render_template("register.html")
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == "POST":
+        email = request.form.get('email')
+        password = request.form.get('password').encode('utf-8')
 
         try:
             # Connect to the MySQL database
             conn = get_db_connection()
             cursor = conn.cursor()
 
-            # Check if the user already exists
+            # Retrieve user information from the database
             cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
             user = cursor.fetchone()
-            if user:
-                # Handle error, e.g., return a JSON response with an error message
-                return jsonify({'success': False, 'error': 'User already exists'})
 
-            # Insert the new user into the database
-            cursor.execute("INSERT INTO users (email, password) VALUES (%s, %s)", (email, hashed_password))
-            conn.commit()
-            cursor.close()
-            conn.close()
+          
+            if user is None or not bcrypt.checkpw(password, user[2].encode('utf-8')):
+                # Handle error, e.g., display an error message
+                return render_template("login.html", error="Please try again, either wrong email or wrong password")
+                # Successfully logged in
 
             return redirect(url_for('home'))  # Redirect to the home page
+
+            # Handle error, e.g., display an error message
+            return render_template("login.html", error="Invalid credentials")
+
         except mysql.connector.Error as err:
             app.logger.error(f"Error connecting to database: {err}")
-            return jsonify({'success': False, 'error': 'There was an error registering your account. Please try again later.'})
-    return render_template("register.html")
+            return render_template("login.html", error="There was an error logging in. Please try again later.")
 
-# Display home page and get city name entered into search form
-@app.route("/", methods=["GET", "POST"])
+    return render_template("login.html")
+@app.route("/home", methods=["GET", "POST"])
 
 def home():
     if request.method == "POST":
